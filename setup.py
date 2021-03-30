@@ -1,156 +1,104 @@
-# -*- coding: utf-8 -*-
-"""Build and install Shadow3"""
 
 #
-# Memorandum: 
 #
-# Install from sources: 
-#     git clone https://github.com/oasys-kit/shadow3
-#     cd shadow3
-#     python setup.py sdist build
-#     # install 
-#     python -m pip install .
-#     # or install using links (developer) 
-#     python -m pip install -e . --no-deps --no-binary :all:
+# setup.py for shadow3
+# Usage:
 #
-# Upload to pypi (when uploading, increment the version number):
-#     python setup.py register (only once, not longer needed)
-#     python setup.py sdist 
-#     python setup.py bdist_wheel
-#     python -m twine upload dist/*
-#          
-# Install from pypi:
-#     python -m pip install shadow3
+#
+# # for macOSX
+#
+# python3 setup.py sdist
+# python3 setup.py bdist_wheel
+# cp src/libshadow*.so .
+# delocate-wheel -w fixed_wheels -v dist/Shadow-0.1.0-cp36-cp36m-macosx_10_9_x86_64.whl
+# python3 -m pip install fixed_wheels/Shadow-0.1.0-cp36-cp36m-macosx_10_9_x86_64.whl
+#
 #
 
-#
-# if problems compiling in new MacOS (>=10.10):
-# export MACOSX_DEPLOYMENT_TARGET=10.9
-#
+# In windows:
+# I patched the file anaconda3/Lib/distutils/cygwinccompiler.py
+# elif int(msc_ver) >= 1900:
+# # VS2015 / MSVC 14.0
+# return []  # ['msvcr140']
+# python3 setup.py bdist_wheel
+# do manuallu:
+# rename .whl to .zip
+# add libshadow3.dll and libshadow3c.dll to Shadow in the zipp file
+# rename back .zip to .whl
 
-import glob
-import os
-import os.path
-import pip
-import platform
-import setuptools
-import setuptools.command.test
-import subprocess
-import sys
 
+import os, sys, string, re
+from glob import glob
 import numpy
-from numpy.distutils.command.build_clib import build_clib
-from distutils.core import setup
-import distutils.cmd
 
-class NullCommand(distutils.cmd.Command, object):
-    """Use to eliminate a ``cmdclass``.
-    Does nothing but complies with :class:`distutils.cmd.Command` protocol.
-    """
+import distutils
+from distutils.core import setup, Extension
+from distutils.command.build import build
+from shutil import which
+from subprocess import run as sub_run
+from subprocess import Popen
 
-    user_options = []
+import setuptools
+from setuptools import setup, Extension
+# from distutils.core import setup
 
-    def initialize_options(*args, **kwargs):
-        pass
+headers = glob (os.path.join ("src/def","*.h") )
+#header = headers + glob (os.path.join ("Include/numpy","*.h") )
+here = os.path.abspath(os.path.dirname(__file__))
 
-    def finalize_options(*args, **kwargs):
-        pass
-    
-    def run(*args, **kwargs):
-        pass
+def check_dependencies():
+    '''
+    Check dependencies for Windows (msbuild) and Unix (make).
+    :raises Exception: if one is missing, an exception is raised.
+    '''
+    if sys.platform == 'win32':
+        if not which("gfortran"):
+            raise Exception("You need to install the gfortran compiles (in conda mingw32)")
+    else:
+        if not which("make"):
+            raise Exception("You need to install make in order to execute the makefile to build Shadow")
 
 
-class BuildClib(build_clib, object):
-    """Set up for shadow3c build"""
-
-    def finalize_options(self):
+class ShadowBuild(build):
+    '''
+    This class is a wrapper to build Shadow before making link before Shadow
+    '''
+    def run(self):
+        check_dependencies()
+        if sys.platform == 'win32':
+            path_to_bat = os.path.join(here, 'src')
+            bat_name = "make.bat"
             try:
-                build_clib.finalize_options(self)
-            except AttributeError:
-                pass
-            
-
-    def build_libraries(self, *args, **kwargs):
-        """Modify the f90 compiler flags and build shadow_version.h"""
-        f90 = self._f_compiler.compiler_f90
-        # Is this portable?
-        for f in ('-Wall', '-fno-second-underscore'):
-            if f in f90:
-                f90.remove(f)
-        f90.extend(('-cpp', '-ffree-line-length-none', '-fomit-frame-pointer', '-I' + self.build_clib))
-                #srio: not needed for python  
-	#self.__version_h()
-        return super(BuildClib, self).build_libraries(*args, **kwargs)
+                batch_process = Popen(bat_name, cwd=path_to_bat, shell=True)
+                stdout, stderr = batch_process.communicate()
+                if stderr:
+                    raise Exception('An error occur during Shadow compilation. Message: {}'.format(stderr))
+            except OSError as err:
+                raise OSError('{} should be located on src. Current path: {}'.format(bat_name, path_to_bat))
+            super().run()
+        else:
+            sub_run(['make', '-C', os.path.join(here, 'src'), 'clean'])
+            sub_run(['make', '-C', os.path.join(here, 'src'), 'lib'])
+            super().run()
+            # sub_run(['make', '-C', os.path.join(here, 'src'), 'clean'])
 
 
+setup ( name = "shadow3",
+        version = "0.1.0",
+	    packages=["Shadow"],
+        package_dir={"Shadow":"./Shadow"},
+        # package_data={'Shadow':['libshadow3.so','libshadow3c.so']},
+        cmdclass={'build': ShadowBuild},
+        # include_package_data=True,
+        ext_modules = [Extension('Shadow.ShadowLib',
+                                 ['src/c/shadow_bind_python.c'],
+                                 include_dirs  = ['src/def', numpy.get_include()],
+                                 library_dirs  = ['./src'],
+                                 libraries     = ['shadow3','shadow3c'],
+                                 # extra_compile_args = ['-msse','-msse2'],
+                                 # extra_link_args = ['-msse','-msse2'],
+                                ),
+                      ],
+        # data_files=[('src', ['src/libshadow3.so','src/libshadow3c.so'])],
+        )
 
-if sys.platform == 'darwin':
-    compile_options = "_COMPILE4MAX"
-    import subprocess
-    #library_dirs=subprocess.check_output(["locate", "libgfortran.dylib"]).decode().replace("/libgfortran.dylib","").split("\n")[:-1]
-    library_dirs=subprocess.check_output(["gfortran" , "--print-file-name" , "libgfortran.dylib"]).decode().replace("/libgfortran.dylib","").split("\n")[:-1]
-    extra_link_args = ['-Wl,-no_compact_unwind']
-    
-elif sys.platform == 'linux':
-    compile_options = "_COMPILE4NIX"
-    library_dirs=[]
-    extra_link_args = []
-else:
-    compile_options = "_COMPILE4WIN"
-    library_dirs=[]
-    extra_link_args = []
-
-setup(
-    name='shadow3',
-    version='18.5.30',
-    packages=['Shadow'],
-    url='http://github.com/oasys-kit/shadow3',
-    license='http://www.gnu.org/licenses/gpl-3.0.html',
-    author='Franco Cerrina and Manuel Sanchez del Rio',
-    author_email='srio@esrf.eu',
-    description='SHADOW is an open source ray tracing code for modeling optical systems.',
-    libraries=[
-        ('shadow3c', {
-            'some-random-param': 1,
-            'sources': [
-                'src/c/shadow_bind_c.c',
-                # The order of these files matters, because fortran
-                # compilers need the "*.mod" files for "use" statements
-                # 'fortran/shadow_version.f90',
-                'src/fortran/shadow_globaldefinitions.f90',
-                'src/fortran/stringio.f90',
-                'src/fortran/gfile.f90',
-                'src/fortran/shadow_beamio.f90',
-                'src/fortran/shadow_math.f90',
-                'src/fortran/shadow_variables.f90',
-                'src/fortran/shadow_roughness.f90',
-                'src/fortran/shadow_kernel.f90',
-                'src/fortran/shadow_synchrotron.f90',
-                'src/fortran/shadow_pre_sync.f90',
-                'src/fortran/shadow_pre_sync_urgent.f90',
-                'src/fortran/shadow_preprocessors.f90',
-                'src/fortran/shadow_postprocessors.f90',
-                'src/fortran/shadow_bind_f.f90',
-                'src/fortran/shadow_crl.f90',
-            ],
-            'macros': [(compile_options, 1)],
-            'include_dirs': ['src/def', 'src/fortran', 'src/c'],
-            # Can't use extra_compiler_args, because applied to all
-            # compilers, and some flags are only used. See BuildClib
-        }),
-    ],
-    cmdclass={
-        'build_clib': BuildClib,
-        'build_src': NullCommand,
-    },
-    ext_modules=[
-        setuptools.Extension(
-            name='Shadow.ShadowLib',
-            sources=['src/c/shadow_bind_python.c'],
-            include_dirs=['src/c', 'src/def', numpy.get_include()],
-            extra_link_args=extra_link_args,
-            library_dirs=library_dirs,
-            libraries=['shadow3c', 'gfortran'],
-        ),
-    ],
-)

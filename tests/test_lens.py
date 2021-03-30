@@ -2,8 +2,8 @@ import Shadow
 import numpy
 
 # using mac oasys, for plots
-# from srxraylib.plot.gol import set_qt
-# set_qt()
+from srxraylib.plot.gol import set_qt
+set_qt()
 
 #
 # runs an absorber of 10 um thickness for a source at 10 keV
